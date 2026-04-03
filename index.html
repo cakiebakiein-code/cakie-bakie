@@ -526,6 +526,52 @@
     <input type="file" id="menu-import-csv"   accept=".csv"       style="display:none" onchange="importMenuCSV(event)">
     <input type="file" id="menu-import-xlsx"  accept=".xlsx,.xls" style="display:none" onchange="importMenuXLSX(event)">
   </div>
+
+  <!-- ── COMBOS & BUNDLES (inside Menu page) ── -->
+  <div class="card" style="margin-top:6px;">
+    <div class="card-title">
+      <span class="card-title-text">🎁 Combos & Bundles</span>
+      <button class="btn btn-outline btn-sm" onclick="toggleComboForm()" id="toggle-combo-btn">＋ New Combo</button>
+    </div>
+
+    <!-- Add Combo Form (hidden by default) -->
+    <div id="combo-form-panel" style="display:none;border-top:1px solid var(--border);padding-top:14px;margin-top:4px;">
+      <div class="form-grid" style="gap:12px;">
+        <div class="form-group full">
+          <label>Combo Name *</label>
+          <input type="text" id="combo-name" placeholder="e.g. Tea Time Bundle, Birthday Box…">
+        </div>
+        <div class="form-group full">
+          <label>Description</label>
+          <input type="text" id="combo-desc" placeholder="e.g. Perfect for evening tea with friends">
+        </div>
+      </div>
+      <div style="margin-top:12px;">
+        <div style="font-size:0.77rem;font-weight:700;color:var(--text-muted);text-transform:uppercase;letter-spacing:0.05em;margin-bottom:8px;">Items in this Combo</div>
+        <div id="combo-items-container"></div>
+        <button class="btn btn-add-item" onclick="addComboItemRow()" style="margin-top:4px;">+ Add Item</button>
+      </div>
+      <div class="form-grid" style="gap:12px;margin-top:14px;">
+        <div class="form-group">
+          <label>Bundle Price (₹) *</label>
+          <input type="number" id="combo-price" placeholder="0" min="0" oninput="updateComboSavings()">
+        </div>
+        <div class="form-group">
+          <label>Individual Total</label>
+          <input type="text" id="combo-individual-total" placeholder="Auto calculated" readonly
+            style="background:var(--cream);color:var(--text-muted);">
+        </div>
+      </div>
+      <div id="combo-savings-badge" style="display:none;margin-top:8px;padding:8px 14px;background:#d1fae5;border-radius:10px;color:#059669;font-size:0.84rem;font-weight:600;"></div>
+      <div style="display:flex;gap:9px;justify-content:flex-end;margin-top:16px;">
+        <button class="btn btn-outline" onclick="clearComboForm()">Clear</button>
+        <button class="btn btn-primary" onclick="saveCombo()">💾 Save Combo</button>
+      </div>
+    </div>
+
+    <!-- Combos list -->
+    <div id="combos-list" style="margin-top:4px;"></div>
+  </div>
 </div>
 
 <!-- PAYMENTS -->
@@ -751,6 +797,7 @@
   </div>
 </div>
 
+
 </main>
 
 <!-- MODAL -->
@@ -771,6 +818,7 @@ let menuItems    = [];
 let customers    = [];
 let savedRecipes = [];
 let ingredientDB = [];
+let combos       = [];
 
 // ── Google Sheets API wrapper ─────────────────────────────
 async function sheetsAPI(action, payload = {}) {
@@ -820,6 +868,7 @@ async function loadFromSheets() {
     menuItems    = res.menu         || [];
     savedRecipes = res.recipes      || [];
     ingredientDB = res.ingredients  || [];
+    combos       = res.combos       || [];
     updateDashboard();
     refreshCustomerList();
     renderMenu?.();
@@ -863,6 +912,12 @@ function saveIngredientDB() {
   return sheetsAPI('saveSheet', { sheet: 'Ingredients', data: ingredientDB })
     .then(() => hideSyncBadge())
     .catch(e => { hideSyncBadge(); console.error('saveIngredientDB failed', e); });
+}
+function saveCombos() {
+  showSyncBadge('💾 Saving combos…');
+  return sheetsAPI('saveSheet', { sheet: 'Combos', data: combos })
+    .then(() => hideSyncBadge())
+    .catch(e => { hideSyncBadge(); console.error('saveCombos failed', e); });
 }
 
 // Upsert an ingredient into the global DB
@@ -992,7 +1047,7 @@ function showPage(page,btn) {
   if(page==='orders')    { renderOrders(); renderAnalytics(); }
   if(page==='customers') renderCustomers();
   if(page==='payments')  renderPayments();
-  if(page==='menu')      renderMenu();
+  if(page==='menu')      { renderMenu(); renderCombos(); }
   if(page==='recipe')       { renderSavedRecipes(); recalcRecipe(); }
   if(page==='ingredients')  renderIngredientsPage();
   if(page==='new-order') { rebuildItemsContainer(); refreshCustomerList(); }
@@ -4135,6 +4190,7 @@ renderSavedRecipes();
 refreshIngredientDatalist();
 refreshRcCategoryOptions();
 
+
 // Sync menu from recipes on load
 if (savedRecipes.length) syncRecipesToMenu();
 
@@ -4144,6 +4200,7 @@ const deliveryDateEl = document.getElementById('delivery-date');
 if (deliveryDateEl) deliveryDateEl.value = tmrw.toISOString().split('T')[0];
 const itemsContainer = document.getElementById('items-container');
 if (itemsContainer) itemsContainer.appendChild(buildItemRow());
+
 </script>
 
 </div><!-- end #app-wrapper -->
@@ -4208,6 +4265,259 @@ if (sessionStorage.getItem('cb_unlocked') === '1') {
   document.getElementById('lock-screen').style.display = 'flex';
   setTimeout(() => document.getElementById('lock-input')?.focus(), 100);
 }
+
+// ── COMBOS & BUNDLES ──────────────────────────────────────
+
+function toggleComboForm() {
+  const panel = document.getElementById('combo-form-panel');
+  const btn   = document.getElementById('toggle-combo-btn');
+  const open  = panel.style.display === 'none';
+  panel.style.display = open ? 'block' : 'none';
+  btn.textContent     = open ? '✕ Cancel' : '＋ New Combo';
+  if (open && !document.getElementById('combo-items-container').children.length) {
+    addComboItemRow();
+  }
+}
+
+function addComboItemRow(name='', qty=1, price=0) {
+  const container = document.getElementById('combo-items-container');
+  const menuOpts  = menuItems.map(m =>
+    `<option value="${esc(m.name)}" data-price="${m.price}">${esc(m.name)} — ₹${m.price.toLocaleString('en-IN')}</option>`
+  ).join('');
+  const comboOpts = ''; // Combos shown in Menu tab, not in order items dropdown
+
+  const row = document.createElement('div');
+  row.className = 'item-row';
+  row.style.marginBottom = '8px';
+  row.innerHTML = `
+    <div class="form-group">
+      <label>Item</label>
+      <select class="combo-item-select" onchange="onComboItemSelect(this);updateComboSavings()">
+        <option value="">— Select from menu —</option>
+        ${menuOpts}
+        ${comboOpts}
+        <option value="__custom__">✏️ Custom item…</option>
+      </select>
+      <input type="text" class="combo-item-custom" placeholder="Custom item name"
+        style="display:none;margin-top:5px;" oninput="updateComboSavings()">
+    </div>
+    <div class="form-group">
+      <label>Qty</label>
+      <input type="number" class="combo-item-qty" value="${qty}" min="1" oninput="updateComboSavings()">
+    </div>
+    <div class="form-group">
+      <label>Unit Price (₹)</label>
+      <input type="number" class="combo-item-price" value="${price||''}" min="0" placeholder="0" oninput="updateComboSavings()">
+    </div>
+    <div class="form-group">
+      <label>&nbsp;</label>
+      <button class="btn btn-danger btn-sm" onclick="this.closest('.item-row').remove();updateComboSavings()">✕</button>
+    </div>`;
+  // Pre-select item if name provided
+  if (name) {
+    const sel = row.querySelector('.combo-item-select');
+    const opt = Array.from(sel.options).find(o => o.value === name);
+    if (opt) sel.value = name;
+    else {
+      sel.value = '__custom__';
+      row.querySelector('.combo-item-custom').style.display = 'block';
+      row.querySelector('.combo-item-custom').value = name;
+    }
+  }
+  container.appendChild(row);
+  updateComboSavings();
+}
+
+function onComboItemSelect(sel) {
+  const row    = sel.closest('.item-row');
+  const custom = row.querySelector('.combo-item-custom');
+  const priceEl = row.querySelector('.combo-item-price');
+  if (sel.value === '__custom__') {
+    custom.style.display = 'block'; custom.focus();
+  } else {
+    custom.style.display = 'none';
+    const opt = sel.selectedOptions[0];
+    if (opt && opt.dataset.price) priceEl.value = opt.dataset.price;
+  }
+  updateComboSavings();
+}
+
+function getComboItems() {
+  const rows = document.querySelectorAll('#combo-items-container .item-row');
+  const items = [];
+  rows.forEach(row => {
+    const sel    = row.querySelector('.combo-item-select');
+    const custom = row.querySelector('.combo-item-custom');
+    const name   = sel.value === '__custom__' ? custom.value.trim() : sel.value;
+    const qty    = parseFloat(row.querySelector('.combo-item-qty')?.value || 1);
+    const price  = parseFloat(row.querySelector('.combo-item-price')?.value || 0);
+    if (name) items.push({ name, qty, price });
+  });
+  return items;
+}
+
+function updateComboSavings() {
+  const items    = getComboItems();
+  const indTotal = items.reduce((s, i) => s + i.qty * i.price, 0);
+  const bundlePrice = parseFloat(document.getElementById('combo-price')?.value || 0);
+  const totalEl  = document.getElementById('combo-individual-total');
+  const badge    = document.getElementById('combo-savings-badge');
+  if (totalEl) totalEl.value = indTotal > 0 ? '₹' + indTotal.toLocaleString('en-IN') : '';
+  if (badge) {
+    const savings = indTotal - bundlePrice;
+    if (savings > 0 && bundlePrice > 0) {
+      badge.style.display = 'block';
+      badge.textContent   = `🎉 Customer saves ₹${savings.toLocaleString('en-IN')} (${Math.round(savings/indTotal*100)}% off) with this bundle!`;
+    } else {
+      badge.style.display = 'none';
+    }
+  }
+}
+
+function saveCombo() {
+  const name  = document.getElementById('combo-name')?.value.trim();
+  const price = parseFloat(document.getElementById('combo-price')?.value || 0);
+  if (!name)    { showToast('⚠️ Combo name is required!'); return; }
+  if (!price)   { showToast('⚠️ Bundle price is required!'); return; }
+  const items = getComboItems();
+  if (!items.length) { showToast('⚠️ Add at least one item to the combo!'); return; }
+
+  const indTotal = items.reduce((s, i) => s + i.qty * i.price, 0);
+  const combo = {
+    id:          Date.now(),
+    name,
+    desc:        document.getElementById('combo-desc')?.value.trim() || '',
+    items,
+    price,
+    indTotal,
+    savings:     Math.max(0, indTotal - price),
+    createdAt:   new Date().toISOString(),
+  };
+
+  combos.unshift(combo);
+  saveCombos();
+  clearComboForm();
+  renderCombos();
+  showToast('🎁 Combo saved!');
+}
+
+function clearComboForm() {
+  document.getElementById('combo-name').value  = '';
+  document.getElementById('combo-desc').value  = '';
+  document.getElementById('combo-price').value = '';
+  document.getElementById('combo-individual-total').value = '';
+  document.getElementById('combo-items-container').innerHTML = '';
+  const badge = document.getElementById('combo-savings-badge');
+  if (badge) badge.style.display = 'none';
+  addComboItemRow();
+}
+
+function renderCombos() {
+  const list = document.getElementById('combos-list'); if (!list) return;
+  if (!combos.length) {
+    list.innerHTML = `<div class="empty-state"><div class="empty-icon">🎁</div><p>No combos yet — create your first bundle above!</p></div>`;
+    return;
+  }
+  list.innerHTML = combos.map((c, idx) => {
+    const savings    = c.indTotal ? Math.max(0, c.indTotal - c.price) : 0;
+    const savingsPct = c.indTotal ? Math.round(savings / c.indTotal * 100) : 0;
+    const itemsList  = (c.items || []).map(i => `${esc(i.name)} ×${i.qty}`).join(' · ');
+    return `
+    <div class="card" style="margin-bottom:12px;" data-combo-idx="${idx}">
+      <div style="display:flex;justify-content:space-between;align-items:flex-start;flex-wrap:wrap;gap:10px;">
+        <div style="flex:1;min-width:200px;">
+          <div style="font-family:'Playfair Display',serif;font-size:1.1rem;color:var(--brown);font-weight:700;">🎁 ${esc(c.name)}</div>
+          ${c.desc ? `<div style="font-size:0.82rem;color:var(--text-muted);margin-top:3px;font-style:italic;">${esc(c.desc)}</div>` : ''}
+          <div style="margin-top:8px;font-size:0.82rem;color:var(--text-muted);">${itemsList}</div>
+        </div>
+        <div style="text-align:right;flex-shrink:0;">
+          <div style="font-family:'Playfair Display',serif;font-size:1.4rem;font-weight:700;color:var(--caramel);">₹${c.price.toLocaleString('en-IN')}</div>
+          ${c.indTotal ? `<div style="font-size:0.78rem;color:var(--text-muted);text-decoration:line-through;">₹${c.indTotal.toLocaleString('en-IN')} individually</div>` : ''}
+          ${savings > 0 ? `<div style="font-size:0.78rem;font-weight:700;color:#059669;margin-top:2px;">Save ₹${savings.toLocaleString('en-IN')} (${savingsPct}% off)</div>` : ''}
+        </div>
+      </div>
+      <!-- Items breakdown -->
+      <div style="margin-top:12px;border-top:1px solid var(--border);padding-top:10px;">
+        <div style="display:flex;flex-wrap:wrap;gap:6px;">
+          ${(c.items||[]).map(i => `
+            <span style="background:var(--cream);border:1px solid var(--border);padding:4px 10px;border-radius:20px;font-size:0.78rem;color:var(--text-muted);">
+              ${esc(i.name)} ×${i.qty} <span style="color:var(--caramel);font-weight:600;">₹${(i.qty*i.price).toLocaleString('en-IN')}</span>
+            </span>`).join('')}
+        </div>
+      </div>
+      <!-- Actions -->
+      <div style="display:flex;gap:7px;margin-top:12px;border-top:1px solid var(--border);padding-top:10px;flex-wrap:wrap;">
+        <button class="btn btn-caramel btn-sm" style="flex:1;" onclick="addComboToOrder(${idx})">📝 Add to New Order</button>
+        <button class="btn btn-outline btn-sm" style="flex:1;" onclick="editCombo(${idx})">✏️ Edit</button>
+        <button class="btn btn-danger btn-sm" onclick="deleteCombo(${idx})">🗑</button>
+      </div>
+    </div>`;
+  }).join('');
+}
+
+function deleteCombo(idx) {
+  if (!confirm('Delete this combo?')) return;
+  combos.splice(idx, 1);
+  saveCombos();
+  renderCombos();
+  showToast('🗑 Combo deleted.');
+}
+
+function editCombo(idx) {
+  const c = combos[idx]; if (!c) return;
+  // Pre-fill the form
+  document.getElementById('combo-name').value  = c.name;
+  document.getElementById('combo-desc').value  = c.desc || '';
+  document.getElementById('combo-price').value = c.price;
+  document.getElementById('combo-items-container').innerHTML = '';
+  (c.items || []).forEach(i => addComboItemRow(i.name, i.qty, i.price));
+  updateComboSavings();
+  // Remove old entry
+  combos.splice(idx, 1);
+  saveCombos();
+  renderCombos();
+  // Scroll to form
+  document.getElementById('combo-form-panel').scrollIntoView({ behavior: 'smooth' });
+  showToast('✏️ Combo loaded for editing — update and save.');
+}
+
+function addComboToOrder(idx) {
+  const c = combos[idx]; if (!c) return;
+  // Navigate to new order
+  showPage('new-order', document.querySelector('[data-page="new-order"]'));
+  setTimeout(() => {
+    // Clear existing items and add combo items
+    const container = document.getElementById('items-container');
+    container.innerHTML = '';
+    (c.items || []).forEach(i => {
+      const row = buildItemRow();
+      container.appendChild(row);
+      const sel = row.querySelector('.item-select');
+      const priceEl = row.querySelector('.item-price');
+      const qtyEl   = row.querySelector('.item-qty');
+      // Try to select from menu
+      const opt = Array.from(sel.options).find(o => o.value === i.name);
+      if (opt) sel.value = i.name;
+      else {
+        sel.value = '__custom__';
+        const custom = row.querySelector('.item-custom');
+        custom.style.display = 'block';
+        custom.value = i.name;
+      }
+      priceEl.value = i.price;
+      qtyEl.value   = i.qty;
+    });
+    // Add discount row note
+    calcTotal();
+    showToast(`🎁 "${c.name}" items added! Bundle price: ₹${c.price.toLocaleString('en-IN')}`);
+    // Auto-set total to bundle price via discount
+    const indTotal = (c.items||[]).reduce((s,i)=>s+i.qty*i.price,0);
+    const discountEl = document.getElementById('order-discount');
+    if (discountEl) discountEl.value = Math.max(0, indTotal - c.price);
+  }, 200);
+}
+
+// Combos are initialised when the form panel is opened (see toggleComboForm)
 </script>
 </body>
 </html>
