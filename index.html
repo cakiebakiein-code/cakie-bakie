@@ -474,6 +474,10 @@
           <label>Address</label>
           <input type="text" id="nc-address" placeholder="House no., street, area, city">
         </div>
+        <div class="form-group full">
+          <label>Notes / Preferences</label>
+          <textarea id="nc-notes" rows="2" placeholder="e.g. Eggless only, allergic to nuts, prefers WhatsApp…" style="resize:vertical;"></textarea>
+        </div>
       </div>
 
       <!-- Important dates -->
@@ -1943,24 +1947,57 @@ function getCustomers() {
   return result;
 }
 
+// ── Customer index helpers (avoids special-char escaping bugs) ──
+let _lastRenderedCustomers = [];
+
+function openCustomerByIdx(idx) {
+  const c = _lastRenderedCustomers[parseInt(idx)];
+  if (c) openCustomer(c.phone || c.name);
+}
+function editCustomerByIdx(idx) {
+  const c = _lastRenderedCustomers[parseInt(idx)];
+  if (c) editCustomer(c.phone || c.name);
+}
+function deleteCustomerByIdx(idx) {
+  const c = _lastRenderedCustomers[parseInt(idx)];
+  if (c) deleteCustomer(c.phone || c.name);
+}
+
 function renderCustomers() {
   const list  =document.getElementById('customers-list');
   const search=(document.getElementById('customer-search')?.value||'').toLowerCase();
   let customers=getCustomers();
   if(search) customers=customers.filter(c=>c.name.toLowerCase().includes(search)||(c.phone||'').includes(search));
   if(!customers.length){list.innerHTML=`<div class="empty-state"><div class="empty-icon">👥</div><p>No customers found.</p></div>`;return;}
-  list.innerHTML=customers.map(c=>{
+  _lastRenderedCustomers = customers;
+  list.innerHTML=customers.map((c,idx)=>{
     const spent=c.orders.filter(o=>o.status!=='cancelled').reduce((s,o)=>s+o.total,0);
     const last=c.orders.sort((a,b)=>new Date(b.createdAt)-new Date(a.createdAt))[0];
-    return `<div class="customer-card" onclick="openCustomer('${esc(c.phone||c.name)}')">
-      <div>
-        <div class="customer-name">${esc(c.name)}</div>
-        <div class="customer-meta">📞 ${esc(c.phone||'—')}${c.email?' · ✉️ '+esc(c.email):''}</div>
-        <div class="customer-meta" style="margin-top:2px;">Last order: ${formatDate(last?.deliveryDate)}</div>
+    const tags=(c.impDates&&c.impDates.length)
+      ? c.impDates.map(d=>`<span style="background:var(--rose-light);color:var(--rose);padding:2px 9px;border-radius:20px;font-size:0.71rem;font-weight:600;">${esc(d.label)}</span>`).join('')
+      : '';
+    // Use data-idx to avoid special character escaping issues in onclick
+    return `<div class="customer-card" style="flex-direction:column;align-items:stretch;gap:10px;" data-cidx="${idx}">
+      <!-- Top row: info + stats -->
+      <div style="display:flex;justify-content:space-between;align-items:flex-start;flex-wrap:wrap;gap:8px;cursor:pointer;" onclick="openCustomerByIdx(this.closest('[data-cidx]').dataset.cidx)">
+        <div>
+          <div class="customer-name">${esc(c.name)}</div>
+          <div class="customer-meta">📞 ${esc(c.phone||'—')}${c.email?' · ✉️ '+esc(c.email):''}</div>
+          ${c.address?`<div class="customer-meta" style="margin-top:2px;">📍 ${esc(c.address)}</div>`:''}
+          <div class="customer-meta" style="margin-top:2px;">Last order: ${formatDate(last?.deliveryDate)}</div>
+          ${tags?`<div style="display:flex;gap:5px;flex-wrap:wrap;margin-top:6px;">${tags}</div>`:''}
+        </div>
+        <div class="customer-stats">
+          <div class="cstat"><div class="cstat-val">${c.orders.length}</div><div class="cstat-lbl">Orders</div></div>
+          <div class="cstat"><div class="cstat-val">₹${spent.toLocaleString('en-IN')}</div><div class="cstat-lbl">Spent</div></div>
+        </div>
       </div>
-      <div class="customer-stats">
-        <div class="cstat"><div class="cstat-val">${c.orders.length}</div><div class="cstat-lbl">Orders</div></div>
-        <div class="cstat"><div class="cstat-val">₹${spent.toLocaleString('en-IN')}</div><div class="cstat-lbl">Spent</div></div>
+      <!-- Action buttons row -->
+      <div style="display:flex;gap:7px;border-top:1px solid var(--border);padding-top:10px;flex-wrap:wrap;">
+        <button class="btn btn-outline btn-sm" style="flex:1;" onclick="openCustomerByIdx(this.closest('[data-cidx]').dataset.cidx)">👁 View Orders</button>
+        <button class="btn btn-caramel btn-sm" style="flex:1;" onclick="editCustomerByIdx(this.closest('[data-cidx]').dataset.cidx)">✏️ Edit Info</button>
+        <button class="btn btn-outline btn-sm" style="flex:1;" onclick="prefillNewOrder('${esc(c.name)}')">📝 New Order</button>
+        <button class="btn btn-danger btn-sm" onclick="deleteCustomerByIdx(this.closest('[data-cidx]').dataset.cidx)">🗑</button>
       </div>
     </div>`;
   }).join('');
@@ -1999,6 +2036,7 @@ function openCustomer(key) {
     </div>
     ${topItems?`<div class="detail-row"><div class="detail-item"><div class="detail-label">Favourite Items</div><div class="detail-value">${topItems}</div></div></div>`:''}
     ${c.address?`<div class="detail-row"><div class="detail-item"><div class="detail-label">Address</div><div class="detail-value">${esc(c.address)}</div></div></div>`:''}
+    ${c.notes?`<div class="detail-row"><div class="detail-item"><div class="detail-label">Notes / Preferences</div><div class="detail-value" style="color:var(--text-muted);font-style:italic;">${esc(c.notes)}</div></div></div>`:''}
     ${(c.impDates&&c.impDates.length)?`
       <div class="detail-row"><div class="detail-item" style="flex:1 1 100%">
         <div class="detail-label">🎉 Important Dates</div>
@@ -2054,6 +2092,11 @@ function editCustomer(key) {
       ${inp('email',   'Email',          c.email,  'email')}
       ${inp('address', 'Address',        c.address)}
     </div>
+    <div class="form-group" style="margin-top:6px;">
+      <label style="font-size:0.75rem;">Notes / Preferences</label>
+      <textarea id="ec-notes" rows="2" placeholder="e.g. Eggless only, allergic to nuts, prefers calls over WhatsApp…"
+        style="border:1.5px solid var(--border);border-radius:9px;padding:8px 11px;font-size:0.86rem;width:100%;box-sizing:border-box;font-family:'DM Sans',sans-serif;resize:vertical;">${esc(c.notes||'')}</textarea>
+    </div>
     <div style="margin-top:10px;">
       <div style="font-size:0.72rem;font-weight:700;color:var(--text-muted);text-transform:uppercase;letter-spacing:0.05em;margin-bottom:8px;">🎉 Important Dates</div>
       <div id="edit-imp-dates-container">${impDatesHTML}</div>
@@ -2103,7 +2146,8 @@ function saveCustomerEdit(oldKey) {
   const idx = customers.findIndex(c=>(c.phone||c.name)===oldKey);
   if (idx === -1) { showToast('❌ Customer not found.'); return; }
 
-  customers[idx] = { name, phone, email, address, impDates };
+  const notes = document.getElementById('ec-notes')?.value.trim();
+  customers[idx] = { name, phone, email, address, notes, impDates };
 
   // Also update matching orders so name/phone stays in sync
   if (oldKey !== newKey || customers[idx].name !== name) {
@@ -2210,7 +2254,7 @@ function saveNewCustomer() {
     return;
   }
 
-  customers.push({ name, phone, email, address, impDates });
+  customers.push({ name, phone, email, address, notes, impDates });
   saveCustomers();
   renderCustomers();
   updateDashboard();
