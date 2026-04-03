@@ -810,7 +810,7 @@
 // ── DATA ──────────────────────────────────────────────────
 // ── GOOGLE SHEETS CONFIG ─────────────────────────────────
 // Paste your Apps Script Web App URL below after Step 3 of setup:
-const SHEETS_URL = 'https://script.google.com/macros/s/AKfycbybyiu0g7fx67BfpGVDCcqbqgWUV4L7DVR-tiZhruk75zBQodz1R3mfIpKnlmgoQIg3zQ/exec';
+const SHEETS_URL = 'https://script.google.com/macros/s/AKfycbyAVP_9gszC_nlaN9YRne6wnRU6tDxeJb4Y-LJ-o2DlrKlcINEWGZ9NV4Atvl1YgvhiEA/exec';
 
 // ── IN-MEMORY DATA (loaded from Google Sheets on startup) ─
 let orders       = [];
@@ -866,7 +866,12 @@ async function loadFromSheets() {
     orders       = res.orders       || [];
     customers    = res.customers    || [];
     menuItems    = res.menu         || [];
-    savedRecipes = res.recipes      || [];
+    savedRecipes = (res.recipes || []).map(r => ({
+      ...r,
+      name:        String(r.name || ''),
+      ingredients: typeof r.ingredients === 'string' ? (() => { try { return JSON.parse(r.ingredients); } catch(e) { return []; } })() : (r.ingredients || []),
+      modes:       typeof r.modes       === 'string' ? (() => { try { return JSON.parse(r.modes);       } catch(e) { return {}; } })() : (r.modes       || {}),
+    })).filter(r => r.name);
     ingredientDB = res.ingredients  || [];
     combos       = res.combos       || [];
     updateDashboard();
@@ -903,7 +908,21 @@ function saveMenu() {
 }
 function saveRecipes() {
   showSyncBadge('💾 Saving recipes…');
-  return sheetsAPI('saveSheet', { sheet: 'Recipes', data: savedRecipes })
+  // Send raw arrays — Apps Script will split ingredients into readable rows
+  const data = savedRecipes.map(r => ({
+    id:          r.id,
+    name:        String(r.name || ''),
+    category:    r.category  || '',
+    yields:      r.yields    || 1,
+    overhead:    r.overhead  || 10,
+    margin:      r.margin    || 40,
+    packaging:   r.packaging || 0,
+    labour:      r.labour    || 0,
+    ingredients: r.ingredients || [],
+    modes:       r.modes       || {},
+    savedAt:     r.savedAt     || new Date().toISOString(),
+  }));
+  return sheetsAPI('saveSheet', { sheet: 'Recipes', data: data })
     .then(() => hideSyncBadge())
     .catch(e => { hideSyncBadge(); console.error('saveRecipes failed', e); });
 }
@@ -924,7 +943,7 @@ function saveCombos() {
 function upsertIngredientDB(ing) {
   if (!ing.name) return;
   const key = ing.name.trim().toLowerCase();
-  const idx = ingredientDB.findIndex(i=>i.name.toLowerCase()===key);
+  const idx = ingredientDB.findIndex(i=>String(i.name||'').toLowerCase()===key);
   const entry = { name:ing.name.trim(), packSize:ing.packSize, packUnit:ing.packUnit, packCost:ing.packCost, updatedAt:new Date().toISOString() };
   if (idx === -1) ingredientDB.push(entry);
   else ingredientDB[idx] = entry;
@@ -1110,6 +1129,12 @@ function buildItemRow() {
     `<option value="${esc(m.name)}" data-price="${m.price}">${esc(m.name)} — ₹${m.price.toLocaleString('en-IN')}</option>`
   ).join('');
 
+  const comboOpts = combos.length
+    ? `<optgroup label="🎁 Combos & Bundles">` +
+      combos.map(c=>`<option value="🎁 ${esc(c.name)}" data-price="${c.price}">🎁 ${esc(c.name)} — ₹${c.price.toLocaleString('en-IN')}</option>`).join('') +
+      `</optgroup>`
+    : '';
+
   const div=document.createElement('div');
   div.className='item-row';
   div.innerHTML=`
@@ -1118,6 +1143,7 @@ function buildItemRow() {
       <select class="item-select" onchange="onMenuSelect(this)">
         <option value="">— Select from menu —</option>
         ${menuOpts}
+        ${comboOpts}
         <option value="__custom__">✏️ Type custom item…</option>
       </select>
       <input type="text" class="item-custom" placeholder="Custom item name" style="display:none;margin-top:6px;">
@@ -1164,11 +1190,13 @@ function refreshCustomerList() {
   const sel = document.getElementById('cust-name');
   if (!sel) return;
   const current = sel.value;
-  // Build from persistent customers store, sorted by name
   const sorted = [...customers].sort((a,b)=>a.name.localeCompare(b.name));
+  // Use index as value — avoids all special character issues
   sel.innerHTML = `<option value="">— Select a customer —</option>` +
-    sorted.map(c=>`<option value="${esc(c.phone||c.name)}">${esc(c.name)}${c.phone?' — '+esc(c.phone):''}</option>`).join('');
+    sorted.map((c,i)=>`<option value="${i}">${esc(c.name)}${c.phone?' — '+esc(c.phone):''}</option>`).join('');
   if (current) sel.value = current;
+  // Store sorted list for lookup
+  sel._sortedCustomers = sorted;
 }
 
 function onCustomerSelect(sel) {
@@ -1176,7 +1204,8 @@ function onCustomerSelect(sel) {
   const info = document.getElementById('selected-customer-info');
   const details = document.getElementById('selected-customer-details');
   if (!key) { info.style.display='none'; return; }
-  const c = customers.find(c=>(c.phone||c.name)===key);
+  const sorted = sel._sortedCustomers || [...customers].sort((a,b)=>a.name.localeCompare(b.name));
+  const c = sorted[parseInt(key)];
   if (!c) { info.style.display='none'; return; }
   const lines = [];
   if (c.phone)   lines.push(`📞 ${esc(c.phone)}`);
@@ -1276,23 +1305,28 @@ function refreshRcCategoryOptions() {
 
 // ── SAVE ORDER ────────────────────────────────────────────
 function saveOrder() {
-  const custKey = document.getElementById('cust-name').value.trim();
+  const custIdx = document.getElementById('cust-name').value.trim();
   const date    = document.getElementById('delivery-date').value;
-  if (!custKey) { showToast('⚠️ Please select a customer!'); return; }
+  if (!custIdx) { showToast('⚠️ Please select a customer!'); return; }
   if (!date)    { showToast('⚠️ Please pick a delivery date!'); return; }
 
-  // Pull full customer details from the store
-  const cust = customers.find(c=>(c.phone||c.name)===custKey);
+  // Look up customer by index (avoids special character issues)
+  const sel    = document.getElementById('cust-name');
+  const sorted = sel._sortedCustomers || [...customers].sort((a,b)=>a.name.localeCompare(b.name));
+  const cust   = sorted[parseInt(custIdx)];
   if (!cust)  { showToast('⚠️ Customer not found. Please add them in the Customers tab first.'); return; }
 
   const items=[];
-  document.querySelectorAll('.item-row').forEach(row=>{
-    const sel   =row.querySelector('.item-select');
-    const custom=row.querySelector('.item-custom');
-    const itemName=sel.value==='__custom__' ? custom.value.trim() : sel.value;
-    const qty  =parseFloat(row.querySelector('.item-qty')?.value||0);
-    const price=parseFloat(row.querySelector('.item-price')?.value||0);
-    if(itemName) items.push({name:itemName,qty,price});
+  document.querySelectorAll('#items-container .item-row').forEach(row=>{
+    const sel    = row.querySelector('.item-select');
+    const custom = row.querySelector('.item-custom');
+    if (!sel) return; // skip malformed rows
+    const itemName = sel.value==='__custom__'
+      ? (custom ? custom.value.trim() : '')
+      : sel.value;
+    const qty   = parseFloat(row.querySelector('.item-qty')?.value  || 0);
+    const price = parseFloat(row.querySelector('.item-price')?.value || 0);
+    if (itemName) items.push({name:itemName, qty, price});
   });
   if(items.length===0){showToast('⚠️ Add at least one item!');return;}
 
@@ -1829,10 +1863,96 @@ function openOrder(id) {
 
     <div style="margin-top:16px;display:flex;gap:9px;flex-wrap:wrap;">
       <button class="btn btn-primary" onclick="downloadInvoice(${o.id})">🧾 Download Invoice</button>
+      <button class="btn btn-caramel" onclick="editOrder(${o.id})">✏️ Edit Order</button>
       <button class="btn btn-outline btn-sm" onclick="showInvoiceSettings(${o.id})" style="margin-left:auto;">⚙️ Invoice Settings</button>
       <button class="btn btn-danger" onclick="deleteOrder(${o.id})">🗑 Delete Order</button>
     </div>`;
   document.getElementById('modal-overlay').classList.add('open');
+}
+
+// ── EDIT ORDER ────────────────────────────────────────────
+function editOrder(id) {
+  const o = orders.find(o=>o.id===id); if(!o) return;
+  document.getElementById('modal-content').innerHTML=`
+    <div class="modal-header">
+      <div class="modal-title">✏️ Edit Order ${fmtOrderNum(o.orderNum||0)}</div>
+      <button class="btn btn-outline btn-sm" onclick="openOrder(${id})">← Back</button>
+    </div>
+
+    <div class="form-grid" style="gap:12px;margin-bottom:4px;">
+      <div class="form-group">
+        <label>Delivery Date</label>
+        <input type="date" id="eo-date" value="${o.deliveryDate||''}"
+          style="border:1.5px solid var(--border);border-radius:9px;padding:8px 11px;font-size:0.86rem;width:100%;box-sizing:border-box;font-family:'DM Sans',sans-serif;">
+      </div>
+      <div class="form-group">
+        <label>Delivery Time</label>
+        <input type="time" id="eo-time" value="${o.deliveryTime||''}"
+          style="border:1.5px solid var(--border);border-radius:9px;padding:8px 11px;font-size:0.86rem;width:100%;box-sizing:border-box;font-family:'DM Sans',sans-serif;">
+      </div>
+      <div class="form-group">
+        <label>Order Source</label>
+        <select id="eo-source"
+          style="border:1.5px solid var(--border);border-radius:9px;padding:8px 11px;font-size:0.86rem;width:100%;box-sizing:border-box;font-family:'DM Sans',sans-serif;background:white;">
+          <option value="whatsapp"  ${(o.source||'')==='whatsapp' ?'selected':''}>WhatsApp</option>
+          <option value="instagram" ${(o.source||'')==='instagram'?'selected':''}>Instagram</option>
+          <option value="phone"     ${(o.source||'')==='phone'    ?'selected':''}>Phone Call</option>
+          <option value="walkin"    ${(o.source||'')==='walkin'   ?'selected':''}>Walk-in</option>
+          <option value="referral"  ${(o.source||'')==='referral' ?'selected':''}>Referral</option>
+        </select>
+      </div>
+      <div class="form-group">
+        <label>Status</label>
+        <select id="eo-status"
+          style="border:1.5px solid var(--border);border-radius:9px;padding:8px 11px;font-size:0.86rem;width:100%;box-sizing:border-box;font-family:'DM Sans',sans-serif;background:white;">
+          ${['pending','confirmed','baking','ready','delivered','cancelled'].map(s=>
+            `<option value="${s}" ${o.status===s?'selected':''}>${statusLabel(s)}</option>`
+          ).join('')}
+        </select>
+      </div>
+      <div class="form-group full">
+        <label>Special Instructions / Notes</label>
+        <textarea id="eo-notes" rows="3"
+          style="border:1.5px solid var(--border);border-radius:9px;padding:8px 11px;font-size:0.86rem;width:100%;box-sizing:border-box;font-family:'DM Sans',sans-serif;resize:vertical;"
+          placeholder="e.g. Eggless, nut-free, message on cake…">${esc(o.notes||'')}</textarea>
+      </div>
+    </div>
+
+    <div style="display:flex;gap:9px;margin-top:16px;flex-wrap:wrap;">
+      <button class="btn btn-primary" style="flex:1;" onclick="saveOrderEdit(${id})">💾 Save Changes</button>
+      <button class="btn btn-outline" onclick="openOrder(${id})">Cancel</button>
+    </div>`;
+  document.getElementById('modal-overlay').classList.add('open');
+}
+
+function saveOrderEdit(id) {
+  const o = orders.find(o=>o.id===id); if(!o) return;
+  const date   = document.getElementById('eo-date')?.value;
+  const time   = document.getElementById('eo-time')?.value;
+  const source = document.getElementById('eo-source')?.value;
+  const status = document.getElementById('eo-status')?.value;
+  const notes  = document.getElementById('eo-notes')?.value.trim();
+
+  if (!date) { showToast('⚠️ Delivery date is required.'); return; }
+
+  const prevStatus = o.status;
+  o.deliveryDate = date;
+  o.deliveryTime = time || '';
+  o.source       = source;
+  o.notes        = notes;
+
+  // Log status change in history if it changed
+  if (status !== prevStatus) {
+    o.status = status;
+    o.history = o.history || [];
+    o.history.push({ status, time: new Date().toISOString() });
+  }
+
+  saveOrders();
+  renderOrders();
+  updateDashboard();
+  showToast('✅ Order updated!');
+  openOrder(id);
 }
 
 function onPaymentSelectChange(id) {
@@ -2244,9 +2364,9 @@ function prefillNewOrder(name) {
     const sel = document.getElementById('cust-name');
     if (!sel) return;
     // find customer by name and select their key
-    const cust = customers.find(c=>c.name===name);
-    const key  = cust ? (cust.phone||cust.name) : name;
-    sel.value = key;
+    const sorted = [...customers].sort((a,b)=>a.name.localeCompare(b.name));
+    const idx = sorted.findIndex(c=>c.name===name);
+    if (idx !== -1) { sel.value = idx; sel._sortedCustomers = sorted; }
     onCustomerSelect(sel);
   }, 150);
 }
@@ -2349,13 +2469,30 @@ function updateDashboard() {
       const payColour = o.payment==='paid' ? 'var(--sage)' : o.payment==='partial' ? 'var(--caramel)' : 'var(--rose)';
       const payIcon   = o.payment==='paid' ? '✅' : o.payment==='partial' ? '⚡' : '⏳';
       const payLabel  = o.payment==='paid' ? 'Paid' : o.payment==='partial' ? 'Partial' : 'Unpaid';
+
+      // Countdown calculation
+      const todayMidnight = new Date(); todayMidnight.setHours(0,0,0,0);
+      const delivDay = new Date(o.deliveryDate + 'T00:00:00');
+      const diffDays = Math.round((delivDay - todayMidnight) / (1000*60*60*24));
+      const countdownText = diffDays === 0 ? '🔴 Today!'
+                          : diffDays === 1 ? '🟠 Tomorrow'
+                          : diffDays <= 3  ? `🟡 In ${diffDays} days`
+                          : `🟢 In ${diffDays} days`;
+      const countdownColor = diffDays === 0 ? '#dc2626'
+                           : diffDays === 1 ? '#ea580c'
+                           : diffDays <= 3  ? '#ca8a04'
+                           : '#16a34a';
+
       return `
       <div style="display:flex;justify-content:space-between;align-items:center;padding:11px 0;border-bottom:1px solid var(--border);flex-wrap:wrap;gap:7px;cursor:pointer;" onclick="showPage('orders',document.querySelector('[data-page=orders]'));openOrder(${o.id})">
-        <div>
-          <div style="font-weight:600;">${esc(o.customer.name)}</div>
-          <div style="font-size:0.79rem;color:var(--text-muted);margin-top:2px;">📅 ${formatDate(o.deliveryDate)} &nbsp;·&nbsp; ${o.items.map(i=>esc(i.name)).join(', ')}</div>
+        <div style="flex:1;min-width:0;">
+          <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;">
+            <div style="font-weight:600;">${esc(o.customer.name)}</div>
+            <span style="font-size:0.75rem;font-weight:700;color:${countdownColor};background:${countdownColor}18;padding:2px 9px;border-radius:20px;white-space:nowrap;">${countdownText}</span>
+          </div>
+          <div style="font-size:0.79rem;color:var(--text-muted);margin-top:3px;">📅 ${formatDate(o.deliveryDate)}${o.deliveryTime?' · ⏰ '+o.deliveryTime:''} &nbsp;·&nbsp; ${o.items.map(i=>esc(i.name)).join(', ')}</div>
         </div>
-        <div style="display:flex;flex-direction:column;align-items:flex-end;gap:5px;">
+        <div style="display:flex;flex-direction:column;align-items:flex-end;gap:5px;flex-shrink:0;">
           <div style="font-weight:700;color:var(--caramel);">₹${o.total.toLocaleString('en-IN')}</div>
           <div style="display:flex;gap:5px;flex-wrap:wrap;justify-content:flex-end;">
             <span class="badge badge-${o.status}">${statusLabel(o.status)}</span>
@@ -2412,32 +2549,32 @@ function showExportModal() {
       <button class="btn btn-outline btn-sm" onclick="closeModalDirect()">✕</button>
     </div>
     <p style="color:var(--text-muted);font-size:0.88rem;margin-bottom:18px;">
-      Choose a format to export your <strong style="color:var(--brown)">${orders.length} orders</strong> and menu.
+      Export all your data — <strong style="color:var(--brown)">${orders.length} orders, ${customers.length} customers, ${menuItems.length} menu items, ${savedRecipes.length} recipes, ${combos.length} combos</strong>.
     </p>
 
     <div style="display:flex;flex-direction:column;gap:10px;">
 
-      <div class="export-option" onclick="exportJSON()">
+      <div class="export-option" onclick="exportJSON()" style="border-color:var(--caramel);background:linear-gradient(135deg,#fffbf7,#fef3e2);">
         <div class="export-icon">🗂</div>
         <div>
-          <div class="export-title">JSON Backup</div>
-          <div class="export-desc">Full backup — orders + menu. Use this to import back into the app on another device.</div>
+          <div class="export-title" style="color:var(--caramel);">Full Backup (JSON) — Recommended</div>
+          <div class="export-desc">Exports <strong>everything</strong> — orders, customers, menu, recipes, ingredients, combos, settings. Use this to restore on another device.</div>
         </div>
       </div>
 
       <div class="export-option" onclick="exportCSV()">
         <div class="export-icon">📄</div>
         <div>
-          <div class="export-title">CSV (Orders)</div>
-          <div class="export-desc">Opens in any spreadsheet app. One row per order item — great for quick viewing or sharing.</div>
+          <div class="export-title">CSV (Orders only)</div>
+          <div class="export-desc">Orders in spreadsheet format. One row per item — great for sharing or quick viewing.</div>
         </div>
       </div>
 
       <div class="export-option" onclick="exportExcel()">
         <div class="export-icon">📊</div>
         <div>
-          <div class="export-title">Excel (.xlsx)</div>
-          <div class="export-desc">Two sheets: Orders summary + Menu catalogue. Opens in Excel, Google Sheets, LibreOffice.</div>
+          <div class="export-title">Excel (.xlsx) — All Data</div>
+          <div class="export-desc">All tabs in one file: Orders, Customers, Menu, Recipes, Ingredients, Combos. Opens in Excel or Google Sheets.</div>
         </div>
       </div>
 
@@ -2488,10 +2625,20 @@ function menuToRows() {
 // ── JSON BACKUP ──
 function exportJSON() {
   closeModalDirect();
-  const backup = { exportedAt: new Date().toISOString(), version: 1, orders, menuItems };
+  const backup = {
+    exportedAt:  new Date().toISOString(),
+    version:     2,
+    orders,
+    customers,
+    menuItems,
+    savedRecipes,
+    ingredientDB,
+    combos,
+    invoiceSettings,
+  };
   const blob = new Blob([JSON.stringify(backup, null, 2)], { type: 'application/json' });
-  triggerDownload(blob, `cakie-bakie-backup-${dateStr()}.json`);
-  showToast('✅ JSON backup exported!');
+  triggerDownload(blob, `cakie-bakie-full-backup-${dateStr()}.json`);
+  showToast('✅ Full backup exported — all data included!');
 }
 
 // ── CSV ──
@@ -2523,24 +2670,15 @@ function exportExcel() {
   // Sheet 1: Orders
   const orderRows = ordersToRows();
   if (orderRows.length) {
-    const ws1 = XLSX.utils.json_to_sheet(orderRows);
-    // Column widths
-    ws1['!cols'] = [
+    const wsOrders = XLSX.utils.json_to_sheet(orderRows);
+    wsOrders['!cols'] = [
       {wch:8},{wch:13},{wch:13},{wch:20},{wch:13},{wch:22},{wch:25},
       {wch:22},{wch:6},{wch:10},{wch:12},{wch:14},{wch:11},{wch:10},{wch:10},{wch:28}
     ];
-    XLSX.utils.book_append_sheet(wb, ws1, 'Orders');
+    XLSX.utils.book_append_sheet(wb, wsOrders, 'Orders');
   }
 
-  // Sheet 2: Menu
-  const menuRows = menuToRows();
-  if (menuRows.length) {
-    const ws2 = XLSX.utils.json_to_sheet(menuRows);
-    ws2['!cols'] = [{wch:25},{wch:14},{wch:10},{wch:30}];
-    XLSX.utils.book_append_sheet(wb, ws2, 'Menu');
-  }
-
-  // Sheet 3: Summary
+  // Sheet 2: Summary
   const summary = [
     ['Cakie Bakie — Order Summary', ''],
     ['Exported on', new Date().toLocaleString('en-IN')],
@@ -2555,9 +2693,9 @@ function exportExcel() {
     ['Partial Payment', orders.filter(o=>o.payment==='partial').length],
     ['Unpaid Orders', orders.filter(o=>o.payment==='unpaid').length],
   ];
-  const ws3 = XLSX.utils.aoa_to_sheet(summary);
-  ws3['!cols'] = [{wch:28},{wch:20}];
-  XLSX.utils.book_append_sheet(wb, ws3, 'Summary');
+  const wsSummary = XLSX.utils.aoa_to_sheet(summary);
+  wsSummary['!cols'] = [{wch:28},{wch:20}];
+  XLSX.utils.book_append_sheet(wb, wsSummary, 'Summary');
 
   // Sheet 4: Payments ledger
   const paymentRows = [];
@@ -2614,13 +2752,97 @@ function exportExcel() {
     }
   });
   if (paymentRows.length) {
-    const ws4 = XLSX.utils.json_to_sheet(paymentRows);
-    ws4['!cols'] = [{wch:9},{wch:20},{wch:13},{wch:13},{wch:16},{wch:16},{wch:13},{wch:22},{wch:13},{wch:14},{wch:16}];
-    XLSX.utils.book_append_sheet(wb, ws4, 'Payments');
+    const wsPayments = XLSX.utils.json_to_sheet(paymentRows);
+    wsPayments['!cols'] = [{wch:9},{wch:20},{wch:13},{wch:13},{wch:16},{wch:16},{wch:13},{wch:22},{wch:13},{wch:14},{wch:16}];
+    XLSX.utils.book_append_sheet(wb, wsPayments, 'Payments');
   }
 
-  XLSX.writeFile(wb, `cakie-bakie-orders-${dateStr()}.xlsx`);
-  showToast('✅ Excel file exported!');
+  // Sheet 5: Customers
+  if (customers.length) {
+    const custRows = customers.map(c => ({
+      'Name':            c.name,
+      'Phone':           c.phone || '',
+      'Email':           c.email || '',
+      'Address':         c.address || '',
+      'Notes':           c.notes || '',
+      'Important Dates': (c.impDates||[]).map(d=>`${d.label}: ${formatDate(d.date)}`).join('; '),
+      'Total Orders':    orders.filter(o=>(o.customer.phone||o.customer.name)===(c.phone||c.name)).length,
+      'Total Spent (₹)': orders.filter(o=>(o.customer.phone||o.customer.name)===(c.phone||c.name)&&o.status!=='cancelled').reduce((s,o)=>s+o.total,0),
+    }));
+    const wsCust = XLSX.utils.json_to_sheet(custRows);
+    wsCust['!cols'] = [{wch:22},{wch:14},{wch:25},{wch:30},{wch:25},{wch:30},{wch:12},{wch:14}];
+    XLSX.utils.book_append_sheet(wb, wsCust, 'Customers');
+  }
+
+  // Sheet 6: Menu
+  if (menuItems.length) {
+    const menuRows = menuItems.map(m => ({
+      'Item Name':   m.name,
+      'Category':    m.category,
+      'Price (₹)':  m.price,
+      'Description': m.desc || '',
+    }));
+    const wsMenu = XLSX.utils.json_to_sheet(menuRows);
+    wsMenu['!cols'] = [{wch:28},{wch:16},{wch:12},{wch:35}];
+    XLSX.utils.book_append_sheet(wb, wsMenu, 'Menu');
+  }
+
+  // Sheet 7: Recipes
+  if (savedRecipes.length) {
+    const recipeRows = [];
+    savedRecipes.forEach(r => {
+      (r.ingredients||[]).forEach((ing, idx) => {
+        recipeRows.push({
+          'Recipe Name':    idx===0 ? r.name : '',
+          'Category':       idx===0 ? (r.category||'') : '',
+          'Yield (pcs)':    idx===0 ? (r.yields||1) : '',
+          'Ingredient':     ing.name || '',
+          'Pack Size':      ing.packSize || '',
+          'Pack Unit':      ing.packUnit || '',
+          'Pack Cost (₹)':  ing.packCost || '',
+          'Used Amount':    ing.usedAmt || '',
+          'Used Unit':      ing.usedUnit || '',
+        });
+      });
+    });
+    if (recipeRows.length) {
+      const wsRecipes = XLSX.utils.json_to_sheet(recipeRows);
+      wsRecipes['!cols'] = [{wch:25},{wch:14},{wch:10},{wch:20},{wch:10},{wch:10},{wch:14},{wch:12},{wch:10}];
+      XLSX.utils.book_append_sheet(wb, wsRecipes, 'Recipes');
+    }
+  }
+
+  // Sheet 8: Ingredients DB
+  if (ingredientDB.length) {
+    const ingRows = ingredientDB.map(i => ({
+      'Ingredient':     i.name,
+      'Pack Size':      i.packSize || '',
+      'Pack Unit':      i.packUnit || '',
+      'Pack Cost (₹)':  i.packCost || '',
+      'Last Updated':   i.updatedAt ? new Date(i.updatedAt).toLocaleDateString('en-IN') : '',
+    }));
+    const wsIng = XLSX.utils.json_to_sheet(ingRows);
+    wsIng['!cols'] = [{wch:22},{wch:10},{wch:10},{wch:14},{wch:16}];
+    XLSX.utils.book_append_sheet(wb, wsIng, 'Ingredients DB');
+  }
+
+  // Sheet 9: Combos
+  if (combos.length) {
+    const comboRows = combos.map(c => ({
+      'Combo Name':         c.name,
+      'Description':        c.desc || '',
+      'Items':              (c.items||[]).map(i=>`${i.name} ×${i.qty}`).join(', '),
+      'Bundle Price (₹)':   c.price || 0,
+      'Individual Total (₹)': c.indTotal || 0,
+      'Savings (₹)':        c.savings || 0,
+    }));
+    const wsCombos = XLSX.utils.json_to_sheet(comboRows);
+    wsCombos['!cols'] = [{wch:22},{wch:25},{wch:35},{wch:16},{wch:18},{wch:14}];
+    XLSX.utils.book_append_sheet(wb, wsCombos, 'Combos');
+  }
+
+  XLSX.writeFile(wb, `cakie-bakie-full-export-${dateStr()}.xlsx`);
+  showToast('✅ Full Excel export — all data included!');
 }
 
 function triggerDownload(blob, filename) {
@@ -3187,6 +3409,23 @@ function recalcRecipe() {
 function saveRecipe() {
   const name = document.getElementById('rc-name')?.value.trim();
   if (!name) { showToast('⚠️ Please enter a recipe name first.'); return; }
+
+  // Sync any manually typed values from DOM into rcIngredients before saving
+  document.querySelectorAll('#rc-ingredients-list .rc-ing-row').forEach(row => {
+    const id  = parseFloat(row.dataset.id);
+    const ing = rcIngredients.find(i => i.id === id);
+    if (!ing) return;
+    ing.name     = row.querySelector('.rc-f-name')?.value.trim()     || ing.name;
+    ing.packSize = row.querySelector('.rc-f-packSize')?.value         || ing.packSize;
+    ing.packUnit = row.querySelector('.rc-f-packUnit')?.value         || ing.packUnit;
+    ing.packCost = row.querySelector('.rc-f-packCost')?.value         || ing.packCost;
+    ing.usedAmt  = row.querySelector('.rc-f-usedAmt')?.value          || ing.usedAmt;
+    ing.usedUnit = row.querySelector('.rc-f-usedUnit')?.value         || ing.usedUnit;
+  });
+
+  // Filter out completely empty rows
+  rcIngredients = rcIngredients.filter(i => i.name);
+
   if (!rcIngredients.length) { showToast('⚠️ Add at least one ingredient.'); return; }
 
   const recipe = {
@@ -3203,7 +3442,7 @@ function saveRecipe() {
     savedAt: new Date().toISOString()
   };
 
-  const existingIdx = savedRecipes.findIndex(r=>r.name.toLowerCase()===name.toLowerCase());
+  const existingIdx = savedRecipes.findIndex(r=>String(r.name||'').toLowerCase()===name.toLowerCase());
   if (existingIdx > -1) {
     if (!confirm(`"${name}" already exists. Overwrite it?`)) return;
     savedRecipes[existingIdx] = recipe;
@@ -3212,7 +3451,6 @@ function saveRecipe() {
     savedRecipes.unshift(recipe);
     showToast('🎉 Recipe saved!');
   }
-  saveRecipes();
   // Save each ingredient to the global ingredient database
   rcIngredients.forEach(ing => {
     if (ing.name && ing.packSize && ing.packCost) upsertIngredientDB(ing);
@@ -3223,6 +3461,11 @@ function saveRecipe() {
   refreshRcCategoryOptions();
   renderSavedRecipes();
   clearRecipeForm();
+
+  // Save to Google Sheets and confirm
+  saveRecipes()
+    .then(() => showToast('✅ Recipe saved to Google Sheets!'))
+    .catch(() => showToast('⚠️ Saved locally but could not sync to Sheets.'));
 }
 
 function loadRecipe(id) {
@@ -4284,7 +4527,10 @@ function addComboItemRow(name='', qty=1, price=0) {
   const menuOpts  = menuItems.map(m =>
     `<option value="${esc(m.name)}" data-price="${m.price}">${esc(m.name)} — ₹${m.price.toLocaleString('en-IN')}</option>`
   ).join('');
-  const comboOpts = ''; // Combos shown in Menu tab, not in order items dropdown
+  // Combos shown as a group in the item dropdown
+  const comboOpts = combos.length ? `<optgroup label="🎁 Combos & Bundles">` +
+    combos.map(c=>`<option value="🎁 ${esc(c.name)}" data-price="${c.price}">🎁 ${esc(c.name)} — ₹${c.price.toLocaleString('en-IN')}</option>`).join('') +
+    `</optgroup>` : '';
 
   const row = document.createElement('div');
   row.className = 'item-row';
