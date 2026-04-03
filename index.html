@@ -2240,6 +2240,7 @@ function saveNewCustomer() {
 
   const email   = document.getElementById('nc-email')?.value.trim();
   const address = document.getElementById('nc-address')?.value.trim();
+  const notes   = document.getElementById('nc-notes')?.value.trim() || '';
   const impDates = [];
   document.querySelectorAll('#nc-imp-dates-container .imp-date-row').forEach(row => {
     const lbl = row.querySelector('.nc-imp-label')?.value.trim();
@@ -4123,18 +4124,7 @@ function downloadInvoice(id) {
 }
 
 // ── INIT ──────────────────────────────────────────────────
-if (!menuItems.length) {
-  menuItems=[
-    {id:1,name:'Chocolate Truffle Cake',category:'Cakes',   price:800, desc:'500g'},
-    {id:2,name:'Vanilla Butter Cake',   category:'Cakes',   price:600, desc:'500g'},
-    {id:3,name:'Red Velvet Cake',        category:'Cakes',   price:950, desc:'500g'},
-    {id:4,name:'Chocolate Cupcake',     category:'Cupcakes',price:80,  desc:'per piece'},
-    {id:5,name:'Vanilla Cupcake',       category:'Cupcakes',price:70,  desc:'per piece'},
-    {id:6,name:'Brownie',               category:'Brownies',price:60,  desc:'per piece'},
-    {id:7,name:'Choco Chip Cookie',     category:'Cookies', price:30,  desc:'per piece'},
-  ];
-  saveMenu();
-}
+// No default menu items — add your own from the Menu tab
 
 // Data is loaded from Google Sheets after login — see loadFromSheets()
 // updateDashboard() is called after data loads
