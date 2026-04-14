@@ -3452,8 +3452,6 @@ function saveRecipe() {
 
   if (!rcIngredients.length) { showToast('⚠️ Add at least one ingredient.'); return; }
 
-  const finalPrice = getFinalPrice();
-
   const recipe = {
     id: Date.now(),
     name,
