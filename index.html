@@ -714,6 +714,21 @@
           <div id="rc-margin-computed" style="font-size:0.74rem;color:var(--text-muted);margin-top:3px;"></div>
         </div>
       </div>
+
+      <!-- Round Off -->
+      <div style="margin-top:10px;padding:12px 14px;background:var(--cream);border-radius:12px;border:1.5px solid var(--border);">
+        <label style="display:flex;justify-content:space-between;align-items:center;font-size:0.77rem;font-weight:600;color:var(--text-muted);text-transform:uppercase;letter-spacing:0.06em;margin-bottom:8px;">
+          <span>🔢 Round Off — Final Selling Price</span>
+          <span style="font-size:0.72rem;font-weight:400;text-transform:none;letter-spacing:0;">+ to round up &nbsp;·&nbsp; − to round down</span>
+        </label>
+        <div style="display:flex;gap:8px;align-items:center;">
+          <input type="number" id="rc-roundoff" value="0" step="0.5" oninput="recalcRecipe()"
+            placeholder="e.g. 5 or -2.5"
+            style="flex:1;box-sizing:border-box;border:1.5px solid var(--border);border-radius:9px;padding:9px 12px;font-size:0.95rem;font-family:'DM Sans',sans-serif;background:white;">
+          <span style="font-size:0.85rem;color:var(--text-muted);font-weight:600;white-space:nowrap;">₹ per piece</span>
+        </div>
+        <div id="rc-roundoff-computed" style="font-size:0.78rem;margin-top:6px;font-weight:600;"></div>
+      </div>
     </div>
 
     <!-- Right: Cost summary -->
@@ -722,6 +737,8 @@
       <div id="rc-summary" style="flex:1;">
         <div style="color:var(--text-muted);font-size:0.85rem;padding:8px 0;">Add ingredients below to see the cost breakdown.</div>
       </div>
+
+
     </div>
   </div>
 
@@ -959,7 +976,8 @@ function syncRecipesToMenu() {
     if (!r) return;
     const { sellPrice } = calcRecipeCosts(r);
     m.name     = r.name;
-    m.price    = parseFloat(sellPrice.toFixed(2));
+    const ro = parseFloat(r.roundoff || 0);
+    m.price    = parseFloat((sellPrice + ro).toFixed(2));
     m.desc     = `Yield: ${r.yields} pc${r.yields>1?'s':''}`;
     m.category = r.category || m.category || 'Recipes';
     changed = true;
@@ -3335,12 +3353,14 @@ function recalcRecipe() {
   const batchCost   = ingredientTotal + overheadAmt + packagingAmt + labourAmt;
   const costPerUnit = batchCost / yields;
   const marginVal   = parseFloat(document.getElementById('rc-margin')?.value)||0;
+  const roundOff    = parseFloat(document.getElementById('rc-roundoff')?.value)||0;
   let sellingPrice;
   if (rcModes.margin === 'pct') {
     sellingPrice = costPerUnit * (1 + marginVal/100);
   } else {
-    sellingPrice = costPerUnit + marginVal; // fixed ₹ added per piece
+    sellingPrice = costPerUnit + marginVal;
   }
+  const finalPrice = sellingPrice + roundOff;
 
   // Show margin computed hint
   const marginEl = document.getElementById('rc-margin-computed');
@@ -3352,6 +3372,18 @@ function recalcRecipe() {
       marginEl.textContent = `= ${pct}% margin`;
     } else {
       marginEl.textContent = '';
+    }
+  }
+
+  // Show roundoff hint
+  const roEl = document.getElementById('rc-roundoff-computed');
+  if (roEl) {
+    if (roundOff !== 0) {
+      const sign = roundOff > 0 ? '+' : '';
+      roEl.textContent = `${sign}₹${roundOff}/pc → final ₹${finalPrice.toFixed(2)}/pc`;
+      roEl.style.color = roundOff > 0 ? 'var(--sage)' : 'var(--rose)';
+    } else {
+      roEl.textContent = '';
     }
   }
 
@@ -3383,16 +3415,19 @@ function recalcRecipe() {
       <span class="rc-summary-total-lbl">Cost per piece</span>
       <span class="rc-summary-total-val">${fmt(costPerUnit)}</span>
     </div>
-    <div class="rc-sell-block">
-      <div style="font-size:0.72rem;opacity:0.7;margin-bottom:8px;text-transform:uppercase;letter-spacing:0.06em;">Suggested Selling Price (${marginLabel})</div>
+    <<div class="rc-sell-block">
+      <div style="font-size:0.72rem;opacity:0.7;margin-bottom:8px;text-transform:uppercase;letter-spacing:0.06em;">Selling Price (${marginLabel}${roundOff!==0?`, ${roundOff>0?'+':''}₹${roundOff} round off`:''})</div>
       <div class="rc-sell-row">
         <span class="rc-sell-lbl">Per piece</span>
-        <span class="rc-sell-highlight">${fmt(sellingPrice)}</span>
+        <span class="rc-sell-highlight">${fmt(finalPrice)}</span>
       </div>
-      ${yields>1?`<div class="rc-sell-row"><span class="rc-sell-lbl">Full batch (${yields} pcs)</span><span class="rc-sell-val">${fmt(sellingPrice*yields)}</span></div>`:''}
+      ${roundOff!==0?`<div class="rc-sell-row" style="opacity:0.65;"><span class="rc-sell-lbl">Before round off</span><span class="rc-sell-val">${fmt(sellingPrice)}</span></div>`:''}
+      ${yields>1?`<div class="rc-sell-row"><span class="rc-sell-lbl">Full batch (${yields} pcs)</span><span class="rc-sell-val">${fmt(finalPrice*yields)}</span></div>`:''}
     </div>
     ${anyNull?`<div style="font-size:0.75rem;color:var(--rose);margin-top:8px;">⚠️ Some ingredients have incomplete data and are excluded from the total.</div>`:''}
   `;
+
+
 }
 
 function saveRecipe() {
@@ -3417,16 +3452,19 @@ function saveRecipe() {
 
   if (!rcIngredients.length) { showToast('⚠️ Add at least one ingredient.'); return; }
 
+  const finalPrice = getFinalPrice();
+
   const recipe = {
     id: Date.now(),
     name,
-    category:  getRcCategory(),
-    yields:    document.getElementById('rc-yield')?.value,
-    overhead:  document.getElementById('rc-overhead')?.value,
-    margin:    document.getElementById('rc-margin')?.value,
-    packaging: document.getElementById('rc-packaging')?.value,
-    labour:    document.getElementById('rc-labour')?.value,
-    modes:     { ...rcModes },
+    category:   getRcCategory(),
+    yields:     document.getElementById('rc-yield')?.value,
+    overhead:   document.getElementById('rc-overhead')?.value,
+    margin:     document.getElementById('rc-margin')?.value,
+    packaging:  document.getElementById('rc-packaging')?.value,
+    labour:     document.getElementById('rc-labour')?.value,
+    roundoff:   document.getElementById('rc-roundoff')?.value || '0',
+    modes:      { ...rcModes },
     ingredients: rcIngredients.map(i=>({...i})),
     savedAt: new Date().toISOString()
   };
@@ -3467,6 +3505,8 @@ function loadRecipe(id) {
   document.getElementById('rc-margin').value    = r.margin||40;
   document.getElementById('rc-packaging').value = r.packaging||0;
   document.getElementById('rc-labour').value    = r.labour||0;
+  const roEl2 = document.getElementById('rc-roundoff');
+  if (roEl2) roEl2.value = r.roundoff || 0;
   // Restore modes
   if (r.modes) {
     Object.assign(rcModes, r.modes);
@@ -3533,6 +3573,10 @@ function clearRecipeForm() {
   document.getElementById('rc-margin').value    = '40';
   document.getElementById('rc-packaging').value = '0';
   document.getElementById('rc-labour').value    = '0';
+  const roClr = document.getElementById('rc-roundoff');
+  if (roClr) roClr.value = 0;
+  const roHint = document.getElementById('rc-roundoff-computed');
+  if (roHint) roHint.textContent = '';
   // Reset modes to defaults
   rcModes.packaging = 'fixed'; rcModes.labour = 'fixed';
   rcModes.overhead  = 'pct';   rcModes.margin = 'pct';
